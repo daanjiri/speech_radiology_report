@@ -7,6 +7,7 @@ import time
 import warnings
 import nltk
 from nltk.translate.meteor_score import meteor_score
+import bert_score
 warnings.filterwarnings("ignore")
 # Download NLTK resources needed for METEOR
 nltk.download('wordnet', quiet=True)
@@ -17,13 +18,23 @@ models = {
     "BERT2BERT": "mrm8488/bert2bert_shared-spanish-finetuned-summarization",
     "mBART-large": "facebook/mbart-large-cc25",
     # "mT5-base": "google/flan-t5-large"
+    "Deepseek": "api:deepseek-r1-distill-llama-70b"  # Added Groq API model
 }
 
 # Function to create summarization pipeline
 def create_summarizer(model_name, device="cpu"):
+    # Skip API-based models - they will be handled separately
+    if model_name.startswith("api:"):
+        return None
+        
     try:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        # Set up mBART for Spanish
+        if "mbart" in model_name.lower():
+            tokenizer.src_lang = "es_XX"
+            
         return pipeline("summarization", model=model, tokenizer=tokenizer, device=device)
     except Exception as e:
         print(f"Error loading {model_name}: {e}")
@@ -70,5 +81,11 @@ def evaluate_summary(original_text, summary):
     
     # 4. Compression ratio
     results["compression_ratio"] = len(summary.split()) / len(original_text.split())
+    
+    # 5. BERT Score
+    P, R, F1 = bert_score.score([summary], [original_text], lang='en', verbose=False)
+    results["bert_score_precision"] = P.item()
+    results["bert_score_recall"] = R.item()
+    results["bert_score_f1"] = F1.item()
     
     return results
