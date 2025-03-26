@@ -5,3 +5,4 @@ audio_raw/
 audio_noisy/
 transcription_errors/
 transcriptions/
+.env
