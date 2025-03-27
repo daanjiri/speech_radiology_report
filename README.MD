@@ -57,3 +57,16 @@ speech-summarization/
 ├── audio_processed/           # Directory for processed audio files
 └── summarization_results/             # Directory for generated summaries
 ```
+
+## Findings
+
+file: Best_model.txt
+path: summarization_results/best_model.txt
+
+This file contains the best model for summarization and the observations about the results.
+
+folder: arquitectura
+path: arquitectura/diagrama_arquitectura.txt
+path: arquitectura/diagrama_arquitectura.png
+
+This folder contains the diagram of the architecture of the project and the explanation of the architecture.

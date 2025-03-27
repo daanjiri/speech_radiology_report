@@ -1,0 +1,41 @@
+# Explicación de la Arquitectura para Producción
+
+## Flujo de Procesamiento
+
+1. **Entrada de Peticiones**
+   - Las solicitudes ingresan a través de AWS API Gateway, con soporte para procesamiento batch o streaming
+   - API Gateway proporciona un punto de entrada seguro y escalable para la aplicación
+
+2. **Procesamiento Inicial (Lambda)**
+   - La función Lambda recibe la solicitud y gestiona el preprocesamiento del audio
+   - Ventajas: modelo serverless on-demand con alta eficiencia de costos y escalabilidad automática
+   - Funciones principales:
+     * Transcripción del audio utilizando ChatGPT-4o-Transcribe (seleccionado por su superior rendimiento en contexto médico frente a Whisper)
+     * Almacenamiento del audio original en buckets S3
+     * Registro de metadatos y resultados de la transcripcion en DynamoDB indexados por ID de usuario (se usa una dynamodb porque escalan automaticamente y son muy costo eficientes)
+
+3. **Cola de Procesamiento (SQS)**
+   - La Lambda envía un mensaje a Amazon SQS para el procesamiento asíncrono
+   - Beneficios: desacopla componentes, controla rate limits, permite alta tolerancia a fallos y escalabilidad horizontal
+   - El mensaje contiene la referencia necesaria para la siguiente etapa de procesamiento
+
+4. **Generación de Resúmenes (Amazon Bedrock/Groq)**
+   - SQS activa el procesamiento en Amazon Bedrock o una Lambda con integración a Groq ( ventaja: políticas de no retención de datos para reentrenamiento)
+   - El modelo Deepseek fue seleccionado por su rendimiento óptimo y capacidad de razonamiento
+   - Ventajas sobre EC2/SageMaker: modelo on-demand, mayor eficiencia económica, sin necesidad de administración de infraestructura
+
+5. **Almacenamiento de Resultados**
+   - Los resúmenes generados se almacenan en DynamoDB
+   - DynamoDB ofrece acceso de baja latencia y escalabilidad automática para volúmenes variables
+
+6. **Entrega al Usuario**
+   - API Gateway sirve el resumen al usuario final
+   - Soporta tanto entrega batch completa como streaming según los requerimientos
+
+## Consideraciones Finales
+- La arquitectura prioriza componentes serverless para optimizar costos operativos
+- Uso de servicios gestionados elimina la necesidad de administración de infraestructura
+- Diseño para escalar automáticamente según la demanda sin intervención manual
+
+
+
