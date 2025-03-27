@@ -1,4 +1,3 @@
-# from torchaudio.backend import sox_io_backend
 import shutil
 import os
 import torch
@@ -30,41 +29,27 @@ def compute_snr(waveform, n_fft=1024, hop_length=512, noise_frames=5, percentile
     Returns:
         float: Estimated SNR in decibels.
     """
-    # Make sure we're working with a mono waveform
     waveform = waveform.squeeze()
     
-    # Compute the STFT of the signal using PyTorch
     window = torch.hann_window(n_fft).to(waveform.device)
     stft = torch.stft(waveform, n_fft=n_fft, hop_length=hop_length, 
                      window=window, return_complex=True)
     
-    # Get magnitude 
     magnitude = torch.abs(stft)
-    
-    # Instead of just first few frames, find the quietest frames across the entire audio
-    # Convert to numpy for percentile calculation
     mag_np = magnitude.cpu().numpy()
-    frame_energies = np.mean(mag_np ** 2, axis=0)  # Energy per frame
-    
-    # Find the percentile value for frame energy (representing likely noise levels)
+    frame_energies = np.mean(mag_np ** 2, axis=0)
     noise_threshold = np.percentile(frame_energies, percentile)
-    
-    # Find frames that are likely to be noise (below the threshold)
     noise_frames_mask = frame_energies <= noise_threshold
     
     if np.sum(noise_frames_mask) > 0:
-        # Calculate noise power from these frames
         noise_indices = np.where(noise_frames_mask)[0]
         noise_magnitude = magnitude[:, noise_indices]
         noise_power = torch.mean(noise_magnitude ** 2).item()
     else:
-        # Fallback to original method if no frames are below threshold
         noise_power = torch.mean(magnitude[:, :noise_frames] ** 2).item()
     
-    # Compute overall signal power
     signal_power = torch.mean(magnitude ** 2).item()
     
-    # Avoid division by zero
     epsilon = 1e-8
     snr = 10 * np.log10(signal_power / (noise_power + epsilon))
     
@@ -79,7 +64,7 @@ class AudioTransform:
                  n_fft=1024, 
                  hop_length=512, 
                  noise_frames=5,
-                 wiener_beta=0.002,  # We'll make this more aggressive
+                 wiener_beta=0.002, 
                  highpass_cutoff=100,
                  device='cpu'):
         """
@@ -98,9 +83,7 @@ class AudioTransform:
             highpass_cutoff (int): Cutoff frequency for high-pass filter.
             device (str): Device to run computations on ('cpu' or 'cuda').
         """
-        # Make noise reduction more aggressive by default
         if noise_reduction_methods is None:
-            # Set default to use both methods for more aggressive noise reduction
             self.noise_reduction_methods = ['spectral', 'wiener']
         elif isinstance(noise_reduction_methods, str):
             self.noise_reduction_methods = [noise_reduction_methods]
@@ -128,7 +111,6 @@ class AudioTransform:
         Returns:
             Tensor: Preprocessed waveform.
         """
-        # Move waveform to the specified device
         waveform = waveform.to(self.device)
         return self.preprocess_transform(waveform, sample_rate)
     
@@ -137,29 +119,20 @@ class AudioTransform:
         Applies spectral subtraction to reduce stationary noise using PyTorch operations.
         Assumes that the first few frames (noise_frames) contain only noise.
         """
-        # Make sure we're working with a mono waveform
         waveform = waveform.squeeze()
         
-        # Compute STFT using PyTorch
         window = torch.hann_window(self.n_fft).to(waveform.device)
         stft = torch.stft(waveform, n_fft=self.n_fft, hop_length=self.hop_length, 
                           window=window, return_complex=True)
         
-        # Get magnitude and phase
         magnitude = torch.abs(stft)
         phase = torch.angle(stft)
         
-        # Estimate noise magnitude from the first few frames
         noise_mag = torch.mean(magnitude[:, :self.noise_frames], dim=1, keepdim=True)
-        
-        # LESS AGGRESSIVE: Reduce noise reduction factor (1.5 -> 1.2)
         noise_mag = noise_mag * 1.2
-        
-        # Subtract noise estimate and clip negative values
         subtracted = magnitude - noise_mag
         subtracted = torch.clamp(subtracted, min=0)
         
-        # Reconstruct the complex spectrum and invert the STFT
         D_clean = subtracted * torch.exp(1j * phase)
         y_clean = torch.istft(D_clean, n_fft=self.n_fft, hop_length=self.hop_length, window=window)
         
@@ -172,30 +145,22 @@ class AudioTransform:
         """
         waveform = waveform.squeeze()
         
-        # Compute STFT using PyTorch
         window = torch.hann_window(self.n_fft).to(waveform.device)
         stft = torch.stft(waveform, n_fft=self.n_fft, hop_length=self.hop_length, 
                           window=window, return_complex=True)
         
-        # Get magnitude and phase
         magnitude = torch.abs(stft)
-        phase = torch.angle(stft)
-        
-        # Estimate noise from the first few frames
+        # phase = torch.angle(stft)
         noise_mag = torch.mean(magnitude[:, :self.noise_frames], dim=1, keepdim=True)
-        # LESS AGGRESSIVE: Reduce noise estimate boost (1.3 -> 1.1)
         noise_mag = noise_mag * 1.1
         
         power_spec = magnitude ** 2
         noise_power = noise_mag ** 2
         eps = 1e-8
         
-        # Compute Wiener gain factor with less aggressive beta (minimum gain)
-        # Higher beta means less noise suppression
         gain = torch.maximum((power_spec - noise_power) / (power_spec + eps), 
                              torch.tensor(self.wiener_beta))
         
-        # Apply gain (take the square root because we're modifying magnitudes)
         filtered_D = torch.sqrt(gain) * stft
         y_clean = torch.istft(filtered_D, n_fft=self.n_fft, hop_length=self.hop_length, window=window)
         
@@ -206,73 +171,55 @@ class AudioTransform:
         Compresses long internal silence segments using a custom implementation.
         If the detected silence is shorter than the maximum allowed, it is left unchanged.
         """
-        # Convert to mono if not already
         waveform = waveform.squeeze()
         
-        # Convert silence threshold from dB to amplitude
         threshold = 10**(self.silence_threshold_db / -20)
         
-        # Calculate energy/amplitude of the signal
         energy = torch.abs(waveform)
         
-        # Create a binary mask where True indicates silence (below threshold)
         is_silence = energy < threshold
         
-        # Convert maximum silence duration (in seconds) to samples
         max_silence_samples = int(self.max_silence_duration * sample_rate)
         
-        # Find the silence regions
         silence_starts = []
         silence_ends = []
         
-        # Skip first few and last few samples to avoid edge effects
         buffer = 10
         in_silence = False
-        
-        # Detect silence regions
+
         for i in range(buffer, len(is_silence) - buffer):
-            # Start of silence
             if not in_silence and is_silence[i]:
                 in_silence = True
                 silence_starts.append(i)
-            # End of silence
             elif in_silence and not is_silence[i]:
                 in_silence = False
                 silence_ends.append(i)
-        
-        # Handle case where audio ends in silence
+
         if in_silence:
             silence_ends.append(len(is_silence) - buffer)
         
-        # Create a list of silence intervals
         silence_intervals = list(zip(silence_starts, silence_ends))
         
-        # Convert to speech intervals (inverse of silence intervals)
         speech_intervals = []
         audio_length = waveform.shape[0]
         
         if len(silence_intervals) == 0:
-            # No silence detected, all speech
             speech_intervals = [[0, audio_length]]
         else:
-            # Build speech intervals between the silence ones
             current_pos = 0
             for start, end in silence_intervals:
                 if current_pos < start:
                     speech_intervals.append([current_pos, start])
                 current_pos = end
                 
-            # Add final segment if needed
             if current_pos < audio_length:
                 speech_intervals.append([current_pos, audio_length])
         
         processed_audio = []
         
-        # If no speech is detected, return the original waveform
         if len(speech_intervals) == 0:
             return waveform.unsqueeze(0)
         
-        # Handle any initial silence before the first speech segment
         first_start = speech_intervals[0][0]
         if first_start > 0:
             if first_start > max_silence_samples:
@@ -280,24 +227,18 @@ class AudioTransform:
             else:
                 processed_audio.append(waveform[:first_start])
         
-        # Process each speech interval and the gap to the next interval
         for i, (start, end) in enumerate(speech_intervals):
-            # Append the speech segment
             processed_audio.append(waveform[start:end])
             
-            # For all but the last interval, check the silence gap to the next segment
             if i < len(speech_intervals) - 1:
                 current_end = end
                 next_start = speech_intervals[i + 1][0]
                 gap = next_start - current_end
                 if gap > max_silence_samples:
-                    # Replace long silence with a fixed shorter silence
                     processed_audio.append(torch.zeros(max_silence_samples, device=waveform.device))
                 else:
-                    # Preserve the original silence if it's short
                     processed_audio.append(waveform[current_end:next_start])
         
-        # Handle any trailing silence after the last speech segment
         last_end = speech_intervals[-1][1]
         if last_end < audio_length:
             trailing_gap = audio_length - last_end
@@ -306,7 +247,6 @@ class AudioTransform:
             else:
                 processed_audio.append(waveform[last_end:])
         
-        # Concatenate all segments to form the final processed audio
         compressed_audio = torch.cat(processed_audio)
         
         print(f"Before: {waveform.shape}, After: {compressed_audio.shape}")
@@ -317,55 +257,50 @@ class AudioTransform:
         Applies comprehensive preprocessing for ASR tasks, including optional volume normalization,
         silence trimming, internal silence compression, high-pass filtering, and noise reduction.
         """
-        # (1) Convert to mono if stereo
+        #(1) Convert to mono
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
         
-        # (2) Volume normalization using SoX gain effect with higher volume
-        effects = [["gain", "-n", "2"]]  # Changed from 6 to 10 dB for much higher volume
+        #(2) Normalize volume
+        effects = [["gain", "-n", "2"]]
         try:
             waveform, sample_rate = apply_effects_tensor(waveform, sample_rate, effects)
         except Exception as e:
             print(f"Volume normalization failed, skipping: {e}")
         
-        # Additional volume boost after normalization (much higher)
-        volume_boost = 4.0  # Changed from 3.0 to 4.0 (300% volume increase)
+        #(3) Boost volume
+        volume_boost = 4.0 
         waveform = waveform * volume_boost
         
-        # Prevent clipping
         if torch.max(torch.abs(waveform)) > 0.99:
             waveform = waveform / torch.max(torch.abs(waveform)) * 0.99
             print("Applied volume boost with clipping prevention")
-        # (3) Trim only the leading and trailing silences using librosa.effects.trim
+        
         try:
             audio_np = waveform.squeeze().numpy()
-            # MORE AGGRESSIVE: Lower threshold means more audio is considered signal (less trimming)
             trimmed_audio, _ = librosa.effects.trim(audio_np, top_db=20)
             waveform = torch.tensor(trimmed_audio).unsqueeze(0)
             print(f"Trimmed waveform shape: {waveform.shape}")
         except Exception as e:
             print(f"Librosa silence trim failed, skipping: {e}")
         
-        # # (4) Optionally compress long internal silences
-        # if self.compress_internal:
-        #     try:
-        #         waveform = self.compress_internal_silences(waveform, sample_rate)
-        #         print(f"Compressed internal silences, waveform shape: {waveform.shape}")
-        #     except Exception as e:
-        #         print(f"Compressing internal silences failed, skipping: {e}")
+        #(4) compress long internal silences
+        if self.compress_internal:
+            try:
+                waveform = self.compress_internal_silences(waveform, sample_rate)
+                print(f"Compressed internal silences, waveform shape: {waveform.shape}")
+            except Exception as e:
+                print(f"Compressing internal silences failed, skipping: {e}")
         
         # (5) Apply a lower frequency high-pass filter
         try:
-            # LESS AGGRESSIVE: Lower the highpass cutoff from 150 to 100 Hz
             effects = [["highpass", str(100)]]
             waveform, sample_rate = apply_effects_tensor(waveform, sample_rate, effects)
         except Exception as e:
             print(f"High-pass filter failed, skipping: {e}")
         
-        # Apply noise reduction methods in sequence
         if self.noise_reduction_methods:
             print(f"Applying noise reduction methods: {self.noise_reduction_methods}")
-            # LESS AGGRESSIVE: Apply only once instead of twice
             for method in self.noise_reduction_methods:
                 if method == 'spectral':
                     waveform = self.spectral_subtraction_transform(waveform, sample_rate)
@@ -445,7 +380,6 @@ class AudioDataset(Dataset):
                 os.makedirs(broken_dir, exist_ok=True)
                 filename = os.path.basename(file_path)
                 
-                # Check if file still exists before trying to move it
                 if os.path.exists(file_path):
                     try:
                         shutil.move(file_path, os.path.join(broken_dir, filename))
@@ -454,9 +388,7 @@ class AudioDataset(Dataset):
                 else:
                     print(f"File already moved by another worker: {file_path}")
                     
-                # DON'T modify self.audio_files during iteration - return None instead
-                # if file_path in self.audio_files:
-                #     self.audio_files.remove(file_path)
+               
             except Exception as handle_error:
                 print(f"Error handling broken file {file_path}: {handle_error}")
             return None, None, file_path, None
@@ -464,20 +396,16 @@ class AudioDataset(Dataset):
         snr = compute_snr(waveform)
         print(f"File: {os.path.basename(file_path)}, SNR: {snr:.2f} dB")
         
-        # You can also collect all SNRs to analyze their distribution
         if not hasattr(self, 'snr_values'):
             self.snr_values = []
         self.snr_values.append(snr)
         
-        # Handle different noise levels differently
         if snr < self.extreme_noise_threshold:
             print(f"File {file_path} has EXTREMELY low SNR: {snr:.2f} dB.")
             
-            # Only move files that are extremely noisy
             if self.move_noisy_files:
                 print(f"Moving to noisy directory: {self.noisy_dir}")
                 try:
-                    # Check if file still exists before trying to move it
                     if os.path.exists(file_path):
                         try:
                             shutil.move(file_path, os.path.join(self.noisy_dir, os.path.basename(file_path)))
@@ -486,16 +414,13 @@ class AudioDataset(Dataset):
                     else:
                         print(f"Noisy file already moved by another worker: {file_path}")
                         
-                    # DON'T modify self.audio_files during iteration - return None instead
-                    # if file_path in self.audio_files:
-                    #     self.audio_files.remove(file_path)
+                   
                 except Exception as handle_error:
                     print(f"Error handling noisy file {file_path}: {handle_error}")
                 return None, None, file_path, None
             else:
                 print("Processing extremely noisy file anyway (move_noisy_files=False)")
         elif snr < self.snr_threshold:
-            # For files with moderate noise levels, process them but log the warning
             print(f"File {file_path} has moderate noise (SNR: {snr:.2f} dB). Processing anyway.")
             
         transcription = None
@@ -503,8 +428,7 @@ class AudioDataset(Dataset):
         if self.transform:
             waveform = self.transform(waveform, sample_rate)
             
-            # Debug prints can be limited or removed in production
-            if idx % 100 == 0:  # Only print every 100th file to reduce output
+            if idx % 100 == 0: 
                 print(f"Processed file: {file_path}")
                 print(f"Sample Rate: {sample_rate}")
                 print(f"Waveform shape after transform: {waveform.shape}")
@@ -518,16 +442,13 @@ class AudioDataset(Dataset):
                 output_path = os.path.join(self.processed_dir, os.path.basename(file_path))
                 torchaudio.save(output_path, waveform_2d, sample_rate)
             
-            # Transcribe using Whisper if transcriber is provided
             if self.transcriber:
                 transcription = self.transcriber.transcribe_file(file_path)
                 
-                # Save transcription if directory is provided
                 if self.transcriptions_dir:
                     base_name = Path(file_path).stem
                     txt_path = os.path.join(self.transcriptions_dir, f"{base_name}.txt")
                     
-                    # Save just the text
                     with open(txt_path, 'w') as f:
                         f.write(transcription["text"])
                 
@@ -555,16 +476,13 @@ def custom_collate_fn(batch):
     Returns:
         tuple: (padded_waveforms, lengths, sample_rates, file_paths, transcriptions)
     """
-    # Filter out None items
     batch = [item for item in batch if item[0] is not None]
     
     if len(batch) == 0:
         return None, None, None, None, None
     
-    # Separate the elements
     waveforms, sample_rates, file_paths, transcriptions = zip(*batch)
     
-    # Pad the waveforms to the same length
     padded_waveforms, lengths = pad_sequence(waveforms)
     
     return padded_waveforms, lengths, torch.tensor(sample_rates), file_paths, transcriptions
@@ -580,30 +498,23 @@ def pad_sequence(batch, padding_value=0.0):
     Returns:
         Tensor: Padded tensor [batch_size, channels, max_time]
     """
-    # Find the max length in the batch
     lengths = [x.shape[-1] for x in batch]
     max_len = max(lengths)
     
-    # Get batch size and number of channels
     batch_size = len(batch)
     n_channels = batch[0].shape[0]
     
-    # Create output tensor
     padded = torch.full((batch_size, n_channels, max_len), padding_value)
     
-    # Fill with actual data
     for i, tensor in enumerate(batch):
         length = tensor.shape[-1]
         padded[i, :, :length] = tensor
         
     return padded, torch.tensor(lengths)
 
-# Add this function to load environment variables before other code
 def load_environment():
     """Load environment variables from .env file"""
-    # Get the directory of the current script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Load environment variables from .env file
     env_path = os.path.join(script_dir, '.env')
     if os.path.exists(env_path):
         print(f"Loading environment variables from {env_path}")
@@ -654,70 +565,57 @@ class OpenAITranscriber:
             return {"text": "", "error": str(e)}
 
 if __name__ == "__main__":
-    # Load environment variables
     load_environment()
     
-    # Set seed for reproducibility
     set_seed(42)
     
-    # Check for CUDA availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Define directories for raw and processed audio
     AUDIO_DIR = "./audio_raw"
     PROCESSED_DIR = "./audio_processed"
     
-    # Define batch size
-    BATCH_SIZE = 2 # Adjust based on your memory constraints
+    BATCH_SIZE = 8
     
-    # Create an audio transform with less aggressive parameters
     transform = AudioTransform(
         noise_reduction_methods=['spectral', 'wiener'],
         compress_internal=True,
         silence_threshold_db=20,
         max_silence_duration=0.005,
-        # LESS AGGRESSIVE: Higher beta value means less aggressive noise filtering
-        wiener_beta=0.005,  # Changed from 0.001 to 0.005 for less aggressive filtering
-        # LESS AGGRESSIVE: Lower highpass cutoff
-        highpass_cutoff=100,  # Changed from 150 to 100 Hz
+        wiener_beta=0.005, 
+        highpass_cutoff=100,  
         device=device
     )
     
-    # Create the dataset with more flexible noisy file handling
     dataset = AudioDataset(
         audio_dir=AUDIO_DIR, 
         transform=transform,
         processed_dir=PROCESSED_DIR,
-        snr_threshold=5.0,           # Increased from 1.0 to 5.0 (more sensitive)
-        extreme_noise_threshold=2.0, # Increased from 0.2 to 2.0 (more sensitive)
+        snr_threshold=5.0,           
+        extreme_noise_threshold=2.0, 
         transcriber=None,
         transcriptions_dir=None,
         move_noisy_files=True,       
         noisy_dir="./audio_noisy"    
     )
     
-    # Create dataloaders
     dataloader = DataLoader(
         dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
         collate_fn=custom_collate_fn,
-        num_workers=0  # Changed from 2 to 0 to avoid race conditions
+        num_workers=2
     )
     
-    # Initialize the OpenAI transcriber
     transcriber = OpenAITranscriber(
         model="gpt-4o-transcribe",
         language="es",
         prompt="Actua como un radiologo que traduce audio de radiologia."
     )
     
-    # Create transcriptions directory
     TRANSCRIPTIONS_DIR = "./transcriptions"
     os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
     
-    # Process audio and transcribe
     print("\n=== Processing Audio and Transcribing ===")
     for i, batch in enumerate(tqdm(dataloader, desc="Processing Audio")):
         padded_waveforms, lengths, sample_rates, file_paths, _ = batch
@@ -725,28 +623,21 @@ if __name__ == "__main__":
         if padded_waveforms is None:
             continue
             
-        # Move data to device
         padded_waveforms = padded_waveforms.to(device)
         
-        # After processing, transcribe the processed files for this batch
         for file_path in file_paths:
             processed_path = os.path.join(PROCESSED_DIR, os.path.basename(file_path))
             if os.path.exists(processed_path):
-                # Transcribe the processed file
                 result = transcriber.transcribe_file(processed_path)
                 
-                # Save transcription as text only
                 base_name = Path(file_path).stem
                 txt_path = os.path.join(TRANSCRIPTIONS_DIR, f"{base_name}.txt")
                 
-                # Save just the text
                 with open(txt_path, 'w') as f:
                     f.write(result["text"])
                 
                 print(f"Transcribed: {os.path.basename(file_path)} - {result['text'][:50]}...")
             else:
                 print(f"WARNING: Processed file does not exist: {os.path.basename(processed_path)}")
-        
-        # print(f"\nCompleted processing and transcribing batch {i+1}")
-
+    
     print("\nAll processing and transcription complete!")

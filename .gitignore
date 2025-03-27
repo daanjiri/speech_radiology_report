@@ -6,4 +6,5 @@ audio_noisy/
 transcription_errors/
 transcriptions/
 summarization_results/
+test_openai.ipynb
 .env

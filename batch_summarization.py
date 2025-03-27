@@ -8,8 +8,11 @@ from metrics import create_summarizer, evaluate_summary, models
 from groq import Groq
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
+
+# Check if CUDA is available
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 
 class TranscriptionDataset(Dataset):
     """Dataset for loading transcription files."""
@@ -52,15 +55,12 @@ def ensure_dir(directory):
 def generate_groq_summary(text, model_id):
     """Generate summary using Groq API."""
     try:
-        # Extract the actual model name from the api: prefix
         groq_model = model_id.replace("api:", "")
         
-        # Initialize Groq client
         client = Groq(
             api_key=os.environ.get("GROQ_API_KEY"),
         )
         
-        # Create the chat completion
         chat_completion = client.chat.completions.create(
             messages=[
                 {
@@ -80,10 +80,8 @@ def generate_groq_summary(text, model_id):
             temperature=0,
         )
         
-        # Extract the summary from the response
         summary = chat_completion.choices[0].message.content
         
-        # Remove <think>...</think> if present
         if "</think>" in summary:
             summary = summary.split("</think>")[-1].strip()
             
@@ -93,80 +91,63 @@ def generate_groq_summary(text, model_id):
         return ""
 
 def batch_summarize():
-    # Create dataset and dataloader
     dataset = TranscriptionDataset('transcriptions')
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
     
-    # Dictionary to store metrics for each model
     all_metrics = {model_name: [] for model_name in models.keys()}
     
-    # Create output directory
     output_dir = 'summarization_results'
     ensure_dir(output_dir)
     
-    # Create metrics directory for individual CSV files
     metrics_dir = os.path.join(output_dir, 'metrics')
     ensure_dir(metrics_dir)
     
-    # Create CSV files for each model and initialize them with headers
     metric_files = {}
     for model_name in models.keys():
         model_metrics_file = os.path.join(metrics_dir, f"{model_name}_metrics.csv")
-        # Only create the header if the file doesn't exist
         if not os.path.exists(model_metrics_file):
             pd.DataFrame(columns=['file_name', 'rouge1', 'rouge2', 'rougeL', 
                                  'meteor', 'content_coverage', 'compression_ratio', 
                                  'bert_score_f1', 'bert_score_precision', 'bert_score_recall']).to_csv(model_metrics_file, index=False)
         metric_files[model_name] = model_metrics_file
     
-    # Create summarizers for each model
     summarizers = {}
     for model_name, model_id in models.items():
         print(f"Loading {model_name}...")
         if not model_id.startswith("api:"):
-            summarizers[model_name] = create_summarizer(model_id)
+            summarizers[model_name] = create_summarizer(model_id, device=device)
         else:
-            # For API-based models, we'll handle them separately
             summarizers[model_name] = "api"
         
-        # Create model-specific output directory
         model_dir = os.path.join(output_dir, model_name)
         ensure_dir(model_dir)
     
-    # Get total number of files for progress tracking
     total_files = len(dataset)
     print(f"Starting to process {total_files} files with {len(summarizers)} models...")
     
-    # Process each file with a tqdm progress bar
     for file_idx, batch in enumerate(tqdm(dataloader, desc="Files processed", position=0)):
         text = batch['text'][0]  # Batch size is 1
         file_name = batch['file_name'][0]
         
-        # Skip empty texts
         if not text:
             print(f"Skipping empty file: {file_name}")
             continue
         
-        # Process with each model with a nested tqdm progress bar
         for model_name in tqdm(summarizers.keys(), desc=f"File {file_idx+1}/{total_files}: {file_name}", position=1, leave=False):
             summarizer = summarizers[model_name]
             if summarizer is None:
                 continue
                 
             try:
-                # Handle API-based models differently
                 if summarizer == "api":
                     model_id = models[model_name]
                     if "deepseek" in model_id.lower():
                         summary = generate_groq_summary(text, model_id)
                     else:
-                        # Add other API handlers here if needed
                         print(f"Unsupported API model: {model_id}")
                         continue
                 else:
-                    # Generate summary with proper Spanish hyperparameters
                     if "mbart" in model_name.lower():
-                        # mBART specific parameters for Spanish
                         summary = summarizer(
                             text, 
                             max_length=150, 
@@ -178,7 +159,6 @@ def batch_summarize():
                             forced_bos_token_id=summarizer.tokenizer.lang_code_to_id["es_XX"]  # Spanish token ID
                         )
                     elif "bert2bert" in model_name.lower():
-                        # BERT2BERT specific parameters
                         summary = summarizer(
                             text, 
                             max_length=150, 
@@ -189,7 +169,6 @@ def batch_summarize():
                             early_stopping=True
                         )
                     else:
-                        # Generic parameters for other models
                         summary = summarizer(
                             text, 
                             max_length=150, 
@@ -199,33 +178,24 @@ def batch_summarize():
                             length_penalty=1.0
                         )
                     
-                    # Handle different return types from summarizers
                     if isinstance(summary, str):
-                        # Direct string return from custom pipeline
                         pass
                     elif isinstance(summary, list) and isinstance(summary[0], dict):
-                        # Return format from HF pipeline
                         summary = summary[0]['summary_text']
                     elif isinstance(summary, list):
-                        # Some other list format
                         summary = summary[0]
                 
-                # Save summary to file
                 output_file = os.path.join(output_dir, model_name, file_name)
                 with open(output_file, 'w', encoding='utf-8') as f:
                     f.write(summary)
                 
-                # Evaluate summary
                 metrics = evaluate_summary(text, summary)
                 metrics['file_name'] = file_name
                 
-                # Append metrics to all_metrics for final calculations
                 all_metrics[model_name].append(metrics)
                 
-                # Immediately write metrics to the model's CSV file
                 metrics_df = pd.DataFrame([metrics])
                 
-                # Only include columns that exist in the metrics dictionary
                 available_columns = ['file_name']
                 for col in ['rouge1', 'rouge2', 'rougeL', 'meteor', 'content_coverage', 
                            'compression_ratio', 'bert_score_f1',
@@ -233,30 +203,23 @@ def batch_summarize():
                     if col in metrics:
                         available_columns.append(col)
                 
-                # Write only the available columns to CSV
                 metrics_df = metrics_df[available_columns]
                 metrics_df.to_csv(metric_files[model_name], mode='a', header=False, index=False)
                 
             except Exception as e:
                 print(f"Error processing {file_name} with {model_name}: {e}")
     
-    # Clear the progress bars
     print("\nAll files processed. Calculating metrics...")
     
-    # Calculate and save global metrics (average across all files for each model)
     global_avg_metrics = {}
     
     for model_name in tqdm(all_metrics.keys(), desc="Calculating global metrics"):
-        # Read the individual metrics from the CSV file
         model_metrics_file = metric_files[model_name]
         if os.path.exists(model_metrics_file):
             df = pd.read_csv(model_metrics_file)
             if len(df) > 0:
-                # Ensure file_name is first
                 if 'file_name' in df.columns:
-                    # Get all metric columns (excluding file_name)
                     metric_columns = [col for col in df.columns if col != 'file_name']
-                    # Calculate average metrics for all available metric columns
                     avg_metrics = df[metric_columns].mean()
                     global_avg_metrics[model_name] = avg_metrics
             else:
@@ -264,20 +227,16 @@ def batch_summarize():
         else:
             print(f"No metrics file found for {model_name}")
     
-    # Create comparison DataFrame for global metrics
     df_global = pd.DataFrame(global_avg_metrics).T
     
-    # Save global metrics to CSV
     global_metrics_file = os.path.join(output_dir, 'global_metrics.csv')
     df_global.to_csv(global_metrics_file)
     print(f"Saved global metrics to {global_metrics_file}")
     
-    # Display global metrics
     print("\n=== GLOBAL METRICS COMPARISON ===")
     pd.set_option('display.precision', 4)
     print(df_global)
     
-    # Find best model for each metric
     print("\n=== BEST MODELS PER METRIC ===")
     metric_cols = ["rouge1", "rouge2", "rougeL", "meteor", "content_coverage", 
                   "bert_score_f1", "bert_score_precision", "bert_score_recall"]
@@ -288,13 +247,11 @@ def batch_summarize():
             best_score = df_global.loc[best_model, metric]
             print(f"Best {metric}: {best_model} ({best_score:.4f})")
     
-    # Best compression (closest to 0.3, which is a common target)
     if "compression_ratio" in df_global.columns:
         best_compression = (df_global["compression_ratio"] - 0.3).abs().idxmin()
         compression_score = df_global.loc[best_compression, "compression_ratio"]
         print(f"Best compression ratio: {best_compression} ({compression_score:.4f})")
     
-    # Fastest model
     if "generation_time" in df_global.columns:
         fastest = df_global["generation_time"].idxmin()
         fastest_time = df_global.loc[fastest, "generation_time"]

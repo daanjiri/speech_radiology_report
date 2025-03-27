@@ -1,30 +1,59 @@
-# Instrucciones para el Reto de Transcripción y Resumen de Dictados Médicos
+# Speech Processing and Summarization Pipeline
 
-## Objetivo
+This project provides a pipeline for processing audio files with Automatic Speech Recognition (ASR) and generating concise summaries of the transcribed content.
 
-El objetivo es implementar un pipeline para transcribir audios de dictados médicos y generar resúmenes de las transcripciones. Se deben comparar diferentes enfoques, incluyendo modelos tipo BERT y modelos LLMs, para evaluar cuál es el más adecuado para este caso. Además, se evaluará tu experiencia utilizando PyTorch y tu capacidad para seguir buenas prácticas de programación.
+## Setup and Installation
 
-## Descripción del Dataset
+### Prerequisites
 
-El dataset consiste en un conjunto de archivos de audio con dictados médicos.
+- Python 3.8 or higher
+- Pip package manager
 
-## Tareas
+### Installation
 
-### 1. Preparación de Datos
+Clone this repository and install the required dependencies:
 
-- Identifica programáticamente si existen grabaciones defectuosas o con ruido excesivo.
-- Documenta cualquier paso de limpieza o normalización de audio que consideres necesario.
+```bash
+git clone https://github.com/yourusername/speech-summarization.git
+cd speech-summarization
+pip install -r requirements.txt
+```
 
-### 2. Transcripción Automática (ASR)
+## Usage Instructions
 
-- Implementa o integra un modelo de ASR y genera los archivos de texto correspondientes a cada audio.
+### Step 1: Preprocessing (ASR)
 
-### 3. Generación de Resúmenes
+Run the preprocessing script to convert audio files to text using Automatic Speech Recognition:
 
-- **Modelo BERT-like:** Usa o fine-tunea un modelo tipo BERT (PromptBert, DistilBERT, etc.) para realizar el resumen de las transcripciones.
-- **Modelo LLM:** Utiliza un LLM para obtener los resúmenes.
-- Compara ambos enfoques.
+```bash
+python preprocess.py
+```
 
-### 4. Arquitectura
+This script will:
 
-- Imagina que tu solución será desplegada en la nube. Proporciona un diagrama de arquitectura proponiendo el flujo, desde la carga de audios, la transcripción (ASR), el preprocesamiento de texto y el modelo final de generación de resúmenes.
+- Process audio files from the input directory
+- Apply speech recognition to generate transcripts
+- Save the processed text for the next step
+
+### Step 2: Batch Summarization
+
+After preprocessing is complete, run the batch summarization script:
+
+```bash
+python batch_summarization.py
+```
+
+This will generate concise summaries for all processed text files.
+
+## Project Structure
+
+```
+speech-summarization/
+├── preprocess.py          # ASR processing script
+├── batch_summarization.py # Text summarization script
+├── requirements.txt       # Required dependencies
+├── audio_raw/                 # Directory for audio files
+├── transcripts/           # Directory for ASR output
+├── audio_processed/           # Directory for processed audio files
+└── summarization_results/             # Directory for generated summaries
+```
