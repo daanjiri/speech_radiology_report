@@ -566,6 +566,93 @@ class OpenAITranscriber:
             print(f"Error transcribing {audio_path}: {e}")
             return {"text": "", "error": str(e)}
 
+class WhisperTranscriber:
+    def __init__(self, model_name="base", device=None, language="en", prompt=None):
+        """
+        Initializes the local Whisper transcriber.
+        
+        Args:
+            model_name (str): The Whisper model size to use (tiny, base, small, medium, large)
+            device (str, optional): Device to run the model on ('cpu' or 'cuda')
+            language (str): The language code (e.g., "en", "es")
+            prompt (str, optional): A prompt to guide the transcription
+        """
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Loading Whisper model '{model_name}' on {self.device}")
+        self.model = whisper.load_model(model_name).to(self.device)
+        self.language = language
+        self.prompt = prompt
+        
+    def transcribe_file(self, audio_path):
+        """
+        Transcribes a single audio file.
+        
+        Args:
+            audio_path (str): Path to the audio file
+            
+        Returns:
+            dict: The transcription result with text and ast
+        """
+        try:
+            result = self.model.transcribe(
+                audio_path, 
+                language=self.language,
+                initial_prompt=self.prompt,
+                verbose=False
+            )
+            return {
+                "text": result["text"],
+                "ast": result  # Contains full AST data including segments, info, etc.
+            }
+        except Exception as e:
+            print(f"Error transcribing {audio_path}: {e}")
+            return {"text": "", "ast": None, "error": str(e)}
+    
+    def transcribe_batch(self, audio_paths, batch_size=16):
+        """
+        Transcribes multiple audio files in batches.
+        
+        Args:
+            audio_paths (list): List of paths to audio files
+            batch_size (int): Number of files to process in each batch
+            
+        Returns:
+            list: List of transcription results with text and ast
+        """
+        results = []
+        for i in range(0, len(audio_paths), batch_size):
+            batch = audio_paths[i:i+batch_size]
+            batch_results = []
+            for audio_path in batch:
+                result = self.transcribe_file(audio_path)
+                batch_results.append(result)
+            results.extend(batch_results)
+        return results
+        
+    def save_transcriptions(self, results, output_dir, save_ast=True):
+        """
+        Saves transcription results to files.
+        
+        Args:
+            results (list): List of transcription results
+            output_dir (str): Directory to save the transcriptions
+            save_ast (bool): Whether to save the full AST data as JSON
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        for result in results:
+            if "audio_path" in result and result["text"]:
+                base_name = Path(result["audio_path"]).stem
+                txt_path = os.path.join(output_dir, f"{base_name}.txt")
+                
+                with open(txt_path, 'w') as f:
+                    f.write(result["text"])
+                
+                if save_ast and "ast" in result and result["ast"]:
+                    json_path = os.path.join(output_dir, f"{base_name}.json")
+                    with open(json_path, 'w') as f:
+                        json.dump(result["ast"], f, indent=2)
+
 if __name__ == "__main__":
     load_environment()
     
@@ -576,6 +663,12 @@ if __name__ == "__main__":
     
     AUDIO_DIR = "./audio_raw"
     PROCESSED_DIR = "./audio_processed"
+    OPENAI_TRANSCRIPTIONS_DIR = "./transcriptions_openai"
+    WHISPER_TRANSCRIPTIONS_DIR = "./transcriptions_whisper"
+    
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    os.makedirs(OPENAI_TRANSCRIPTIONS_DIR, exist_ok=True)
+    os.makedirs(WHISPER_TRANSCRIPTIONS_DIR, exist_ok=True)
     
     BATCH_SIZE = 8
     
@@ -589,14 +682,26 @@ if __name__ == "__main__":
         device=device
     )
     
+    openai_transcriber = OpenAITranscriber(
+        model="gpt-4o-transcribe",
+        language="es",
+        prompt="Actua como un radiologo que traduce audio de radiologia."
+    )
+    
+    whisper_transcriber = WhisperTranscriber(
+        model_name="base",  
+        device=device,
+        language="es",
+        prompt="Actua como un radiologo que traduce audio de radiologia."
+    )
+    
+    # Process audio and transcribe in a single loop
     dataset = AudioDataset(
         audio_dir=AUDIO_DIR, 
         transform=transform,
         processed_dir=PROCESSED_DIR,
         snr_threshold=5.0,           
         extreme_noise_threshold=2.0, 
-        transcriber=None,
-        transcriptions_dir=None,
         move_noisy_files=True,       
         noisy_dir="./audio_noisy"    
     )
@@ -609,37 +714,54 @@ if __name__ == "__main__":
         num_workers=2
     )
     
-    transcriber = OpenAITranscriber(
-        model="gpt-4o-transcribe",
-        language="es",
-        prompt="Actua como un radiologo que traduce audio de radiologia."
-    )
-    
-    TRANSCRIPTIONS_DIR = "./transcriptions"
-    os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
-    
-    print("\n=== Processing Audio and Transcribing ===")
-    for i, batch in enumerate(tqdm(dataloader, desc="Processing Audio")):
-        padded_waveforms, lengths, sample_rates, file_paths, _ = batch
-        
-        if padded_waveforms is None:
+    print("\n=== Processing Audio Files and Transcribing ===")
+    for i, batch in enumerate(tqdm(dataloader, desc="Processing and Transcribing")):
+        if batch[0] is None:
             continue
             
-        padded_waveforms = padded_waveforms.to(device)
+        # Unpack batch
+        _, _, file_paths, _ = batch
         
+        # Process each file in the batch
         for file_path in file_paths:
-            processed_path = os.path.join(PROCESSED_DIR, os.path.basename(file_path))
-            if os.path.exists(processed_path):
-                result = transcriber.transcribe_file(processed_path)
+            # Get the processed file path
+            processed_file = os.path.join(PROCESSED_DIR, os.path.basename(file_path))
+            if not os.path.exists(processed_file):
+                print(f"Processed file not found: {processed_file}, skipping transcription")
+                continue
                 
-                base_name = Path(file_path).stem
-                txt_path = os.path.join(TRANSCRIPTIONS_DIR, f"{base_name}.txt")
-                
-                with open(txt_path, 'w') as f:
-                    f.write(result["text"])
-                
-                print(f"Transcribed: {os.path.basename(file_path)} - {result['text'][:50]}...")
-            else:
-                print(f"WARNING: Processed file does not exist: {os.path.basename(processed_path)}")
+            # Get base name for saving transcriptions
+            base_name = Path(file_path).stem
+            
+            # Transcribe with OpenAI
+            try:
+                openai_result = openai_transcriber.transcribe_file(processed_file)
+                openai_txt_path = os.path.join(OPENAI_TRANSCRIPTIONS_DIR, f"{base_name}.txt")
+                with open(openai_txt_path, 'w') as f:
+                    f.write(openai_result["text"])
+                print(f"OpenAI transcription for {base_name}: {openai_result['text'][:50]}...")
+            except Exception as e:
+                print(f"Error with OpenAI transcription for {file_path}: {e}")
+            
+            # Transcribe with Whisper
+            try:
+                whisper_result = whisper_transcriber.transcribe_file(processed_file)
+                whisper_txt_path = os.path.join(WHISPER_TRANSCRIPTIONS_DIR, f"{base_name}.txt")
+                with open(whisper_txt_path, 'w') as f:
+                    f.write(whisper_result["text"])
+                    
+                # Save AST data
+                if whisper_result["ast"]:
+                    json_path = os.path.join(WHISPER_TRANSCRIPTIONS_DIR, f"{base_name}.json")
+                    with open(json_path, 'w') as f:
+                        json.dump(whisper_result["ast"], f, indent=2)
+                        
+                print(f"Whisper transcription for {base_name}: {whisper_result['text'][:50]}...")
+            except Exception as e:
+                print(f"Error with Whisper transcription for {file_path}: {e}")
     
     print("\nAll processing and transcription complete!")
+    print(f"Processed audio saved to: {PROCESSED_DIR}")
+    print(f"OpenAI transcriptions saved to: {OPENAI_TRANSCRIPTIONS_DIR}")
+    print(f"Whisper transcriptions and AST data saved to: {WHISPER_TRANSCRIPTIONS_DIR}")
+    
