@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 def compute_snr(waveform, n_fft=1024, hop_length=512, noise_frames=5, percentile=10):
     """
-    Computes an approximate SNR (in dB) for the given waveform using a more robust method.
+    Computes an approximate SNR(signal to noise ratio) (in dB) for the given waveform using a more robust method.
     
     Args:
         waveform (Tensor): Audio tensor of shape [channels, samples]. Should be mono.
@@ -276,6 +276,7 @@ class AudioTransform:
             waveform = waveform / torch.max(torch.abs(waveform)) * 0.99
             print("Applied volume boost with clipping prevention")
         
+        #(4) Trim silence end
         try:
             audio_np = waveform.squeeze().numpy()
             trimmed_audio, _ = librosa.effects.trim(audio_np, top_db=20)
@@ -284,7 +285,7 @@ class AudioTransform:
         except Exception as e:
             print(f"Librosa silence trim failed, skipping: {e}")
         
-        #(4) compress long internal silences
+        #(5) compress long internal silences
         if self.compress_internal:
             try:
                 waveform = self.compress_internal_silences(waveform, sample_rate)
@@ -292,13 +293,14 @@ class AudioTransform:
             except Exception as e:
                 print(f"Compressing internal silences failed, skipping: {e}")
         
-        # (5) Apply a lower frequency high-pass filter
+        # (6) Apply a lower frequency high-pass filter
         try:
             effects = [["highpass", str(100)]]
             waveform, sample_rate = apply_effects_tensor(waveform, sample_rate, effects)
         except Exception as e:
             print(f"High-pass filter failed, skipping: {e}")
         
+        #(7) Apply noise reduction methods
         if self.noise_reduction_methods:
             print(f"Applying noise reduction methods: {self.noise_reduction_methods}")
             for method in self.noise_reduction_methods:
