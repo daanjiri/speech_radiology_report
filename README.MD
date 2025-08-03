@@ -87,7 +87,7 @@ Audio Input → API Gateway → Lambda (Transcription) → S3/DynamoDB
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/speech_radiology_report.git
+git clone https://github.com/daanjiri/speech_radiology_report.git
 cd speech_radiology_report
 pip install -r requirements.txt
 ```
